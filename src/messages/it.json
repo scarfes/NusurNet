@@ -1,0 +1,29 @@
+{
+  "common": {
+    "appName": "NusurNet",
+    "loading": "Caricamento...",
+    "error": "Errore",
+    "retry": "Riprova"
+  },
+  "home": {
+    "title": "La piattaforma per gli immigrati e gli studenti in Italia",
+    "subtitle": "Informazioni trasparenti, gratuite, verificate. Confronta le università, prepara il tuo dossier, trova le risorse vicino a te.",
+    "ctaStudents": "Sezione studenti",
+    "ctaCitizens": "Servizi amministrativi",
+    "ctaResources": "Risorse locali",
+    "healthCheckLabel": "Stato del sistema",
+    "healthCheckOk": "Connessione al database OK",
+    "healthCheckError": "Errore di connessione al database"
+  },
+  "footer": {
+    "tagline": "Costruito con cura per chi arriva in Italia.",
+    "version": "Versione di sviluppo — Sprint 0"
+  },
+  "nav": {
+    "home": "Home",
+    "students": "Studenti",
+    "services": "Servizi",
+    "resources": "Risorse",
+    "about": "Chi siamo"
+  }
+}

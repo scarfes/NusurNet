@@ -1,0 +1,29 @@
+{
+  "common": {
+    "appName": "NusurNet",
+    "loading": "Chargement...",
+    "error": "Erreur",
+    "retry": "Réessayer"
+  },
+  "home": {
+    "title": "La plateforme des immigrés et étudiants en Italie",
+    "subtitle": "Information transparente, gratuite, vérifiée. Compare les universités, prépare ton dossier, trouve les ressources près de chez toi.",
+    "ctaStudents": "Espace étudiants",
+    "ctaCitizens": "Services administratifs",
+    "ctaResources": "Ressources locales",
+    "healthCheckLabel": "État du système",
+    "healthCheckOk": "Connexion à la base de données OK",
+    "healthCheckError": "Erreur de connexion à la base de données"
+  },
+  "footer": {
+    "tagline": "Construit avec soin pour celles et ceux qui arrivent en Italie.",
+    "version": "Version de développement — Sprint 0"
+  },
+  "nav": {
+    "home": "Accueil",
+    "students": "Étudiants",
+    "services": "Services",
+    "resources": "Ressources",
+    "about": "À propos"
+  }
+}
