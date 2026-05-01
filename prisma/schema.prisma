@@ -21,16 +21,20 @@
 //      - Editor / actor references       → onDelete: SetNull
 // =============================================================================
 
+// Postgres extensions (pg_trgm, unaccent, citext, uuid-ossp) are pre-installed
+// at container boot by docker/postgres-init/01-extensions.sql. We don't declare
+// them in the schema because the postgresqlExtensions preview feature was
+// deprecated in Prisma 6.16.0 — extensions should be managed via custom
+// migrations instead (see Prisma docs).
+
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
-  provider   = "postgresql"
-  url        = env("DATABASE_URL")
-  directUrl  = env("DIRECT_URL")
-  extensions = [pg_trgm, unaccent, citext, uuidOssp(map: "uuid-ossp")]
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // =============================================================================

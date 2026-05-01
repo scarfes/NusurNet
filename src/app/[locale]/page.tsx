@@ -11,10 +11,14 @@ export const dynamic = 'force-dynamic';
 
 async function getHealthCheck() {
   try {
-    const row = await prisma.healthCheck.findFirst({
-      orderBy: { createdAt: 'desc' },
-    });
-    return { ok: true as const, message: row?.message ?? 'No row yet (run db:seed)' };
+    // Schema-agnostic ping: doesn't depend on any specific model.
+    // (Sprint 1 removed the HealthCheck table — we now have a real catalog.)
+    await prisma.$queryRaw`SELECT 1`;
+    const cityCount = await prisma.city.count();
+    return {
+      ok: true as const,
+      message: `Database reachable · ${cityCount} cities seeded`,
+    };
   } catch (error) {
     logger.error('healthcheck.failed', {
       error: error instanceof Error ? error.message : String(error),
