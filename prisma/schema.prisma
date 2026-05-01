@@ -1,8 +1,24 @@
 // =============================================================================
-// NusurNet — Prisma schema
+// NusurNet — Prisma Schema (Sprint 1: full domain model)
 // =============================================================================
-// Sprint 0: minimal schema with one model to validate the DB connection.
-// Sprint 1 will introduce the full data model (User, University, Service, etc.)
+// This file replaces the Sprint 0 HealthCheck placeholder with the complete
+// domain: identity (with NextAuth tables), university catalog, services,
+// resource points, user engagement (comparisons, journey checklist),
+// transactions, and audit log.
+//
+// Conventions
+// -----------
+//  • Primary keys: UUID v4 (User-facing data) or CUID (NextAuth-only tables)
+//  • Naming: camelCase in Prisma client, snake_case in Postgres (via @map)
+//  • Translations: every translatable resource has a sibling *Translation
+//    table keyed by (resourceId, locale). No JSON-as-i18n.
+//  • Versioning: Service edits captured as a ServiceVersion snapshot row.
+//  • Indexes: every FK has an explicit @@index (Prisma 5 doesn't auto-index).
+//  • Search: GIN trigram indexes (pg_trgm) on fields used for fuzzy lookup.
+//  • Cascade rules:
+//      - User-owned personal data        → onDelete: Cascade
+//      - Audit / transactional records   → onDelete: Restrict (preserve trail)
+//      - Editor / actor references       → onDelete: SetNull
 // =============================================================================
 
 generator client {
@@ -17,7 +33,10 @@ datasource db {
   extensions = [pg_trgm, unaccent, citext, uuidOssp(map: "uuid-ossp")]
 }
 
-// Locale enum used across translatable models (kept here for early validation)
+// =============================================================================
+// 0. ENUMS
+// =============================================================================
+
 enum Locale {
   IT
   FR
@@ -25,12 +44,610 @@ enum Locale {
   EN
 }
 
-// Minimal "ping" model used to verify migrations and connection in Sprint 0.
-// Will be removed/replaced in Sprint 1.
-model HealthCheck {
-  id        String   @id @default(uuid()) @db.Uuid
-  message   String
-  createdAt DateTime @default(now()) @map("created_at")
+enum Role {
+  USER
+  MENTOR
+  MODERATOR
+  ADMIN
+}
 
-  @@map("health_check")
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum DegreeType {
+  TRIENNALE          // Bachelor (3 yr IT)
+  MAGISTRALE         // Master (2 yr IT)
+  CICLO_UNICO        // Single-cycle 5–6 yr (medicine, law, architecture)
+  DOTTORATO          // PhD
+  MASTER_I_LIVELLO   // Post-bachelor specialization
+  MASTER_II_LIVELLO  // Post-master specialization
+  CORSO_SINGOLO      // Standalone course
+}
+
+enum ServiceCategory {
+  HOUSING
+  ADMINISTRATIVE   // permesso di soggiorno, codice fiscale, residenza
+  HEALTH           // tessera sanitaria, medico di base
+  EDUCATION
+  EMPLOYMENT
+  FINANCE          // banking, IBAN, taxes
+  LEGAL
+  TRANSPORT
+  OTHER
+}
+
+enum ResourcePointType {
+  CARITAS
+  CPIA              // Centro provinciale per l'istruzione degli adulti
+  CENTRO_IMPIEGO    // Public employment centre
+  ASL               // Local health authority
+  QUESTURA          // Police HQ (residence permits)
+  COMUNE            // City hall
+  PATRONATO         // Patronato / CAF social services
+  ASSOCIATION       // Migrant-support NGOs
+  OTHER
+}
+
+enum SubscriptionKind {
+  SCHOLARSHIP_ALERT
+  SERVICE_UPDATE
+  HOUSING_ALERT
+  EVENT_REMINDER
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  CANCELLED
+  REFUNDED
+  FAILED
+}
+
+enum ReportStatus {
+  OPEN
+  REVIEWING
+  RESOLVED
+  DISMISSED
+}
+
+enum ReportTargetType {
+  USER
+  SERVICE
+  RESOURCE_POINT
+  COMPARISON_SET
+}
+
+enum JourneyStepCategory {
+  PRE_DEPARTURE
+  ARRIVAL
+  ADMINISTRATIVE
+  HOUSING
+  EDUCATION
+  INTEGRATION
+}
+
+// =============================================================================
+// 1. NEXTAUTH ADAPTER TABLES (do not modify shape — adapter contract)
+// =============================================================================
+// These follow @auth/prisma-adapter verbatim. Custom user fields go on User,
+// not Account/Session. NextAuth reads/writes these directly during auth flows.
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id") @db.Uuid
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("account")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id") @db.Uuid
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_token")
+}
+
+// =============================================================================
+// 2. IDENTITY & PROFILE
+// =============================================================================
+
+model User {
+  id              String     @id @default(uuid()) @db.Uuid
+  email           String     @unique @db.Citext
+  emailVerified   DateTime?  @map("email_verified")
+  passwordHash    String?    @map("password_hash") // null when OAuth-only
+  name            String?    // NextAuth-compat (display name)
+  image           String?    // NextAuth-compat avatar URL
+
+  // Profile (richer than NextAuth defaults)
+  firstName       String?    @map("first_name")
+  lastName        String?    @map("last_name")
+  phone           String?
+  avatarUrl       String?    @map("avatar_url")
+  preferredLocale Locale     @default(IT) @map("preferred_locale")
+
+  // Authorization
+  role            Role       @default(USER)
+  status          UserStatus @default(PENDING_VERIFICATION)
+
+  // Membership QR token (printed on the digital member card)
+  qrCodeToken     String     @unique @default(uuid()) @map("qr_code_token") @db.Uuid
+
+  // Optional home city (helps default search results & resource recommendations)
+  homeCityId      String?    @map("home_city_id") @db.Uuid
+  homeCity        City?      @relation("UserHomeCity", fields: [homeCityId], references: [id], onDelete: SetNull)
+
+  // GDPR consent timestamps
+  acceptedTermsAt DateTime?  @map("accepted_terms_at")
+  acceptedGdprAt  DateTime?  @map("accepted_gdpr_at")
+
+  createdAt       DateTime   @default(now()) @map("created_at")
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+  lastLoginAt     DateTime?  @map("last_login_at")
+
+  // Relations
+  accounts        Account[]
+  sessions        Session[]
+  mentorProfile   MentorProfile?
+  subscriptions   Subscription[]
+  comparisonSets  ComparisonSet[]
+  journeyProgress JourneyProgress[]
+  orders          Order[]
+  reports         Report[]          @relation("ReportReporter")
+  serviceEdits    ServiceVersion[]  @relation("ServiceVersionEditor")
+  auditLogs       AuditLog[]
+
+  @@index([role, status])
+  @@index([createdAt])
+  @@map("user")
+}
+
+model MentorProfile {
+  userId           String   @id @map("user_id") @db.Uuid
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  headline         String   // short pitch shown on mentor cards
+  bio              String?  @db.Text
+  languages        String[] // ISO 639-1 codes: ["it","fr","ar","en"]
+  expertise        String[] // free-form tags: ["housing","scholarships",...]
+  yearsInItaly     Int?     @map("years_in_italy")
+  acceptingMentees Boolean  @default(true) @map("accepting_mentees")
+
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@index([acceptingMentees])
+  @@map("mentor_profile")
+}
+
+model Subscription {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  kind      SubscriptionKind
+  // Free-form filters; shape depends on kind. Examples:
+  //   SCHOLARSHIP_ALERT: { degreeTypes: ["MAGISTRALE"], region: "Lombardia" }
+  //   HOUSING_ALERT:     { cityIds: [...], priceMaxEur: 600 }
+  filters   Json
+  isActive  Boolean          @default(true) @map("is_active")
+
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([kind, isActive])
+  @@map("subscription")
+}
+
+// =============================================================================
+// 3. CATALOG: Cities, Universities, Courses, Scholarships
+// =============================================================================
+
+model City {
+  id       String   @id @default(uuid()) @db.Uuid
+  slug     String   @unique // "milano", "roma", "torino"
+  nameIt   String   @map("name_it")
+  nameFr   String?  @map("name_fr") // exonym only when it differs (Rome, Florence)
+  region   String   // ISO 3166-2 region code or readable name
+  province String?
+  lat      Decimal? @db.Decimal(9, 6)
+  lng      Decimal? @db.Decimal(9, 6)
+
+  universities   University[]
+  resourcePoints ResourcePoint[]
+  usersHome      User[]          @relation("UserHomeCity")
+
+  @@index([region])
+  @@index([nameIt(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("city")
+}
+
+model University {
+  id          String   @id @default(uuid()) @db.Uuid
+  slug        String   @unique
+  cityId      String   @map("city_id") @db.Uuid
+  city        City     @relation(fields: [cityId], references: [id], onDelete: Restrict)
+
+  website     String?
+  emailAdm    String?  @map("email_admissions")
+  isPublic    Boolean  @default(true) @map("is_public")
+  qsRanking   Int?     @map("qs_ranking_world")
+  foundedYear Int?     @map("founded_year")
+  logoUrl     String?  @map("logo_url")
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  translations UniversityTranslation[]
+  courses      Course[]
+  scholarships Scholarship[]   @relation("UniversityScholarships")
+  comparedIn   ComparisonSet[] @relation("ComparisonUniversities")
+
+  @@index([cityId])
+  @@index([isPublic])
+  @@map("university")
+}
+
+model UniversityTranslation {
+  universityId  String     @map("university_id") @db.Uuid
+  locale        Locale
+  university    University @relation(fields: [universityId], references: [id], onDelete: Cascade)
+
+  name          String
+  shortName     String?    @map("short_name")
+  description   String?    @db.Text
+  admissionsUrl String?    @map("admissions_url")
+
+  @@id([universityId, locale])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("university_translation")
+}
+
+model Course {
+  id            String     @id @default(uuid()) @db.Uuid
+  universityId  String     @map("university_id") @db.Uuid
+  university    University @relation(fields: [universityId], references: [id], onDelete: Cascade)
+
+  degreeType    DegreeType @map("degree_type")
+  nameIt        String     @map("name_it")
+  nameEn        String?    @map("name_en")
+  durationYears Int        @map("duration_years")
+  language      String[]   // ["it"], ["en"], ["it","en"]
+  tuitionEurMin Decimal?   @map("tuition_eur_min") @db.Decimal(10, 2)
+  tuitionEurMax Decimal?   @map("tuition_eur_max") @db.Decimal(10, 2)
+  websiteUrl    String?    @map("website_url")
+  isActive      Boolean    @default(true) @map("is_active")
+
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+
+  @@index([universityId])
+  @@index([degreeType])
+  @@index([nameIt(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("course")
+}
+
+model Scholarship {
+  id          String    @id @default(uuid()) @db.Uuid
+  slug        String    @unique
+  titleIt     String    @map("title_it")
+  titleFr     String?   @map("title_fr")
+  provider    String    // "DSU Lombardia", "MAECI", "EDISU Piemonte"
+  amountEur   Decimal?  @db.Decimal(10, 2)
+  deadline    DateTime?
+  applyUrl    String?   @map("apply_url")
+  // Structured eligibility, e.g.:
+  //   { incomeMaxEur: 23000, citizenship: ["TN","MA","DZ"],
+  //     degreeTypes: ["TRIENNALE","MAGISTRALE"] }
+  eligibility Json
+  description String?   @db.Text
+  isPublished Boolean   @default(false) @map("is_published")
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  universities University[] @relation("UniversityScholarships")
+
+  @@index([deadline])
+  @@index([isPublished])
+  @@index([titleIt(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("scholarship")
+}
+
+// =============================================================================
+// 4. SERVICES & RESOURCE POINTS
+// =============================================================================
+// A "Service" is a how-to guide ("Get a codice fiscale", "Open a bank account").
+// Versioned: every edit captured as a ServiceVersion snapshot row.
+// A "ResourcePoint" is a physical place on the map (Caritas, CPIA, Questura).
+
+model Service {
+  id             String          @id @default(uuid()) @db.Uuid
+  slug           String          @unique
+  category       ServiceCategory
+  iconKey        String?         @map("icon_key") // lucide-react icon name
+  estimatedDays  Int?            @map("estimated_days")
+  costEurMin     Decimal?        @map("cost_eur_min") @db.Decimal(10, 2)
+  costEurMax     Decimal?        @map("cost_eur_max") @db.Decimal(10, 2)
+  isPremium      Boolean         @default(false) @map("is_premium") // paid (Sprint 7)
+  priceEur       Decimal?        @map("price_eur") @db.Decimal(10, 2)
+  isPublished    Boolean         @default(false) @map("is_published")
+  currentVersion Int             @default(1) @map("current_version")
+
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  translations   ServiceTranslation[]
+  versions       ServiceVersion[]
+  orders         Order[]
+
+  @@index([category, isPublished])
+  @@index([isPremium])
+  @@map("service")
+}
+
+model ServiceTranslation {
+  serviceId    String  @map("service_id") @db.Uuid
+  locale       Locale
+  service      Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  title        String
+  summary      String  @db.Text
+  bodyMd       String  @db.Text @map("body_md") // markdown content
+  // Required documents list, e.g.:
+  //   [{ key: "passport", labelIt: "Passaporto", labelFr: "Passeport" }, ...]
+  documents    Json
+  metaKeywords String? @map("meta_keywords")
+
+  @@id([serviceId, locale])
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("service_translation")
+}
+
+model ServiceVersion {
+  id         String   @id @default(uuid()) @db.Uuid
+  serviceId  String   @map("service_id") @db.Uuid
+  service    Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  version    Int
+  editorId   String?  @map("editor_id") @db.Uuid
+  editor     User?    @relation("ServiceVersionEditor", fields: [editorId], references: [id], onDelete: SetNull)
+
+  // Full snapshot of Service + all translations at this version.
+  snapshot   Json
+  changeNote String?  @map("change_note")
+
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([serviceId, version])
+  @@index([editorId])
+  @@map("service_version")
+}
+
+model ResourcePoint {
+  id           String            @id @default(uuid()) @db.Uuid
+  slug         String            @unique
+  type         ResourcePointType
+  cityId       String            @map("city_id") @db.Uuid
+  city         City              @relation(fields: [cityId], references: [id], onDelete: Restrict)
+
+  nameIt       String            @map("name_it") // proper noun, kept in Italian
+  address      String
+  lat          Decimal           @db.Decimal(9, 6)
+  lng          Decimal           @db.Decimal(9, 6)
+  phone        String?
+  email        String?
+  website      String?
+  // Opening hours per weekday, e.g.: { mon: ["09:00-13:00"], tue: [], ... }
+  openingHours Json?             @map("opening_hours")
+
+  isVerified   Boolean           @default(false) @map("is_verified")
+  isActive     Boolean           @default(true) @map("is_active")
+
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+
+  translations ResourcePointTranslation[]
+
+  @@index([cityId])
+  @@index([type, isActive])
+  @@index([nameIt(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("resource_point")
+}
+
+model ResourcePointTranslation {
+  resourcePointId String        @map("resource_point_id") @db.Uuid
+  locale          Locale
+  resourcePoint   ResourcePoint @relation(fields: [resourcePointId], references: [id], onDelete: Cascade)
+
+  description     String        @db.Text
+  servicesNote    String?       @db.Text @map("services_note") // e.g. "Speaks Arabic on Tuesdays"
+
+  @@id([resourcePointId, locale])
+  @@map("resource_point_translation")
+}
+
+// =============================================================================
+// 5. ENGAGEMENT: comparisons & journey checklist
+// =============================================================================
+// JourneyStep    = canonical catalog of checklist steps
+// JourneyStepTranslation = locale labels/descriptions
+// JourneyProgress = one row per (user, step) — granular, queryable, extensible
+
+model ComparisonSet {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name      String
+  notes     String?  @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  universities University[] @relation("ComparisonUniversities")
+
+  @@index([userId])
+  @@map("comparison_set")
+}
+
+model JourneyStep {
+  id          String              @id @default(uuid()) @db.Uuid
+  key         String              @unique // stable identifier, e.g. "obtain_codice_fiscale"
+  category    JourneyStepCategory
+  orderIndex  Int                 @map("order_index")
+  iconKey     String?             @map("icon_key")
+  isOptional  Boolean             @default(false) @map("is_optional")
+
+  // Optional deep-link to the Service that explains how to do this step.
+  // Stored as slug (not FK) so a Service deletion doesn't break the catalog.
+  serviceSlug String?             @map("service_slug")
+
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+
+  translations JourneyStepTranslation[]
+  progress     JourneyProgress[]
+
+  @@index([category, orderIndex])
+  @@map("journey_step")
+}
+
+model JourneyStepTranslation {
+  stepId      String      @map("step_id") @db.Uuid
+  locale      Locale
+  step        JourneyStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  title       String
+  description String      @db.Text
+
+  @@id([stepId, locale])
+  @@map("journey_step_translation")
+}
+
+model JourneyProgress {
+  id          String      @id @default(uuid()) @db.Uuid
+  userId      String      @map("user_id") @db.Uuid
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stepId      String      @map("step_id") @db.Uuid
+  step        JourneyStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  completed   Boolean     @default(false)
+  completedAt DateTime?   @map("completed_at")
+  notes       String?     @db.Text // user's private notes for this step
+
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  @@unique([userId, stepId])
+  @@index([userId, completed])
+  @@index([stepId])
+  @@map("journey_progress")
+}
+
+// =============================================================================
+// 6. TRANSACTIONS: Orders & Reports
+// =============================================================================
+
+model Order {
+  id          String      @id @default(uuid()) @db.Uuid
+  userId      String      @map("user_id") @db.Uuid
+  user        User        @relation(fields: [userId], references: [id], onDelete: Restrict)
+  serviceId   String      @map("service_id") @db.Uuid
+  service     Service     @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  status      OrderStatus @default(PENDING)
+  amountEur   Decimal     @map("amount_eur") @db.Decimal(10, 2)
+  currency    String      @default("EUR")
+  providerRef String?     @unique @map("provider_ref") // Stripe payment intent id
+  paidAt      DateTime?   @map("paid_at")
+
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([serviceId])
+  @@index([status])
+  @@map("order")
+}
+
+model Report {
+  id          String           @id @default(uuid()) @db.Uuid
+  reporterId  String           @map("reporter_id") @db.Uuid
+  reporter    User             @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Restrict)
+
+  // Polymorphic target — validated at the application layer.
+  targetType  ReportTargetType @map("target_type")
+  targetId    String           @map("target_id") @db.Uuid
+
+  reason      String           // controlled vocabulary (kept as string for flexibility)
+  description String?          @db.Text
+  status      ReportStatus     @default(OPEN)
+  resolution  String?          @db.Text
+  resolvedAt  DateTime?        @map("resolved_at")
+
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  @@index([targetType, targetId])
+  @@index([status])
+  @@index([reporterId])
+  @@map("report")
+}
+
+// =============================================================================
+// 7. AUDIT LOG (admin/moderator action trail)
+// =============================================================================
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  action     String   // e.g. "service.publish", "user.suspend", "report.resolve"
+  resource   String   // table or resource name
+  resourceId String?  @map("resource_id")
+  oldValues  Json?    @map("old_values")
+  newValues  Json?    @map("new_values")
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([resource, resourceId])
+  @@index([createdAt])
+  @@map("audit_log")
 }
